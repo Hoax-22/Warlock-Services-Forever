@@ -2,6 +2,8 @@ local addon = CreateFrame("Frame")
 local queue = WSFQueue.New()
 local panel, status, queueText, summonButton, removeButton
 local spellButtons = {}
+local requestRows = {}
+local completedRequests = {}
 local selected = 1
 local pendingRequests = {}
 local healthstones = { 5512, 5511, 5509, 5510, 9421, 19004, 19005, 19006,
@@ -73,6 +75,33 @@ local function Button(parent, label, x, y, width, secure)
     if secure then b:RegisterForClicks("AnyUp", "AnyDown") end
     return b
 end
+local function SafeName(name)
+    return name and not string.find(name, "[%s%c/;,%[%]\\]")
+end
+local function RemoveCompleted()
+    local keep = queue.names[selected]
+    for i = #queue.names, 1, -1 do
+        if completedRequests[string.lower(queue.names[i])] then WSFQueue.Remove(queue, i) end
+    end
+    completedRequests = {}
+    for i, name in ipairs(queue.names) do
+        if name == keep then selected = i; break end
+    end
+end
+local function RequestedName(name)
+    if queue.lookup[string.lower(name)] then return name end
+    -- Some clients omit the realm in combat logs. Resolve only an unambiguous
+    -- short name so two players on different realms cannot remove each other.
+    if string.find(name, "-", 1, true) then return end
+    local match
+    for _, candidate in ipairs(queue.names) do
+        if string.lower(string.match(candidate, "^[^-]+")) == string.lower(name) then
+            if match then return end
+            match = candidate
+        end
+    end
+    return match
+end
 local function Update()
     if not panel then return end
     local shards, stones = Count(6265), 0
@@ -81,21 +110,25 @@ local function Update()
     status:SetText(color .. "Soul shards: " .. shards .. " / " .. WarlockServicesForeverDB.shardTarget ..
         "|r\nHealthstones: " .. stones)
     selected = math.max(1, math.min(selected, #queue.names))
-    local lines = { "Summon requests (exact message: 123):" }
-    local first = math.max(1, selected - 5)
-    for i = first, math.min(#queue.names, first + 7) do
-        table.insert(lines, (i == selected and "> " or "   ") .. i .. ". " .. queue.names[i])
-    end
-    if #queue.names == 0 then table.insert(lines, "No requests.") end
-    table.insert(lines, "Total: " .. #queue.names)
-    queueText:SetText(table.concat(lines, "\n"))
+    queueText:SetText("Summon requests: " .. #queue.names .. " (click a name to target)")
     if Locked() then return end
+    local first = math.floor((selected - 1) / #requestRows) * #requestRows + 1
+    for offset, row in ipairs(requestRows) do
+        local index = first + offset - 1
+        local name = queue.names[index]
+        row.queueIndex = index
+        row:SetAttribute("type", "macro")
+        row:SetAttribute("macrotext", SafeName(name) and ("/targetexact " .. name) or "")
+        row:SetText(name and ((index == selected and "> " or "") .. name) or "")
+        row:SetEnabled(SafeName(name) and true or false)
+        if name then row:Show() else row:Hide() end
+    end
     local ritual = SpellName(698)
     local name = queue.names[selected]
     summonButton:SetAttribute("type", "macro")
     -- Names come from chat sender metadata, never from the message body.
     -- Restrict interpolation to player-name characters and optional realm suffix.
-    local safe = name and not string.find(name, "[%s%c/;,%[%]\\]")
+    local safe = SafeName(name)
     summonButton:SetAttribute("macrotext", safe and ritual and
         ("/targetexact " .. name .. "\n/cast " .. ritual) or "")
     summonButton:SetEnabled(safe and ritual ~= nil or false)
@@ -109,7 +142,7 @@ end
 local function CreatePanel()
     panel = CreateFrame("Frame", "WarlockServicesForeverPanel", UIParent,
         BackdropTemplateMixin and "BackdropTemplate" or nil)
-    panel:SetSize(340, 485)
+    panel:SetSize(340, 615)
     panel:SetPoint("CENTER", UIParent, "CENTER", WarlockServicesForeverDB.x or 0,
         WarlockServicesForeverDB.y or 0)
     panel:SetClampedToScreen(true)
@@ -144,23 +177,33 @@ local function CreatePanel()
     queueText:SetPoint("TOPLEFT", 16, -185)
     queueText:SetWidth(310)
     queueText:SetJustifyH("LEFT")
-    summonButton = Button(panel, "Summon selected", 16, -355, 150, true)
-    removeButton = Button(panel, "Remove selected", 171, -355, 150)
+    for i = 1, 8 do
+        local row = Button(panel, "", 16, -207 - (i - 1) * 28, 305, true)
+        -- PostClick updates selection after the secure target action. Never invoke
+        -- TargetUnit from an insecure handler or mutate protected attributes in combat.
+        row:SetScript("PostClick", function(self)
+            if Locked() then return end
+            if queue.names[self.queueIndex] then selected = self.queueIndex; Update() end
+        end)
+        table.insert(requestRows, row)
+    end
+    summonButton = Button(panel, "Summon selected", 16, -448, 150, true)
+    removeButton = Button(panel, "Remove selected", 171, -448, 150)
     removeButton:SetScript("OnClick", function()
         if Locked() then return end
         WSFQueue.Remove(queue, selected)
         Update()
     end)
-    Button(panel, "Previous", 16, -385, 150):SetScript("OnClick", function()
+    Button(panel, "Previous", 16, -478, 150):SetScript("OnClick", function()
         if Locked() then return end
         selected = math.max(1, selected - 1); Update()
     end)
-    Button(panel, "Next", 171, -385, 150):SetScript("OnClick", function()
+    Button(panel, "Next", 171, -478, 150):SetScript("OnClick", function()
         if Locked() then return end
         selected = math.min(#queue.names, selected + 1); Update()
     end)
     local hint = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    hint:SetPoint("TOPLEFT", 16, -425)
+    hint:SetPoint("TOPLEFT", 16, -520)
     hint:SetWidth(305)
     hint:SetJustifyH("LEFT")
     hint:SetText("Trade: open trade, offer stone, then accept.\nSummons need party members and a shard.\n/wsf toggles this panel. /wsf help lists options.")
@@ -178,8 +221,25 @@ addon:SetScript("OnEvent", function(self, event, ...)
         CreatePanel()
         for _, e in ipairs({ "BAG_UPDATE", "SPELLS_CHANGED", "PLAYER_REGEN_ENABLED",
             "CHAT_MSG_PARTY", "CHAT_MSG_PARTY_LEADER", "CHAT_MSG_RAID", "CHAT_MSG_RAID_LEADER",
-            "CHAT_MSG_WHISPER" }) do self:RegisterEvent(e) end
+            "CHAT_MSG_WHISPER", "COMBAT_LOG_EVENT_UNFILTERED" }) do self:RegisterEvent(e) end
         Say("Loaded. Type /wsf help for options.")
+    elseif event == "COMBAT_LOG_EVENT_UNFILTERED" then
+        -- Ritual of Summoning's initial cast/channel is not proof of a summon.
+        -- Only the player's completed summon effect with an identified recipient
+        -- may remove a request. 7720 is the vanilla Summon Player effect.
+        local data
+        if CombatLogGetCurrentEventInfo then data = { CombatLogGetCurrentEventInfo() }
+        else data = { ... } end
+        local subevent, sourceGUID, destName, spellID = data[2], data[4], data[9], data[12]
+        if UnitGUID and sourceGUID == UnitGUID("player") and destName and
+            ((subevent == "SPELL_SUMMON" and (spellID == 698 or spellID == 7720)) or
+             (subevent == "SPELL_CAST_SUCCESS" and spellID == 7720)) then
+            local name = RequestedName(destName)
+            if name then
+                completedRequests[string.lower(name)] = true
+                if not Locked() then RemoveCompleted(); Update() end
+            end
+        end
     elseif string.sub(event, 1, 9) == "CHAT_MSG_" then
         local message, sender = ...
         -- Defer requests until combat ends to preserve the protected button target.
@@ -189,6 +249,7 @@ addon:SetScript("OnEvent", function(self, event, ...)
         if WSFQueue.Add(queue, sender, message) then Update() end
     else
         if event == "PLAYER_REGEN_ENABLED" then
+            RemoveCompleted()
             for _, request in ipairs(pendingRequests) do
                 WSFQueue.Add(queue, request[1], request[2])
             end

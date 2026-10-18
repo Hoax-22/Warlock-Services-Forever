@@ -2,7 +2,7 @@
 ## Title: Warlock Services Forever
 ## Notes: Soul shards, healthstones, and a summon request queue.
 ## Author: Hoax-22
-## Version: 0.1.0
+## Version: 0.2.0
 ## SavedVariables: WarlockServicesForeverDB
 Queue.lua
 Core.lua

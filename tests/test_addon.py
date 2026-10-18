@@ -14,6 +14,7 @@ function UnitClass() return 'Warlock','WARLOCK' end
 function GetSpellInfo(id) return 'Spell' .. id end
 function GetItemCount(id) return counts[id] or 0 end
 function GetBuildInfo() return 'unknown','0','',16001 end
+function UnitGUID(unit) if unit=='player' then return 'Player-Warlock' end end
 local methods = {}
 function methods:SetScript(k,v) self.scripts[k]=v end
 function methods:SetAttribute(k,v)
@@ -107,6 +108,78 @@ class AddonTests(unittest.TestCase):
         offered=false; combat=true
         findText('Offer healthstone').scripts.OnClick()
         assert(not offered)
+        ''')
+
+    def test_clickable_rows_target_and_select_requesters(self):
+        self.lua.execute('''
+        event('PLAYER_LOGIN')
+        event('CHAT_MSG_PARTY','123','Alice')
+        event('CHAT_MSG_PARTY','123','Bob')
+        local row=findText('Bob')
+        assert(row.template=='SecureActionButtonTemplate,UIPanelButtonTemplate')
+        assert(row.attributes.macrotext=='/targetexact Bob')
+        row.scripts.PostClick(row)
+        assert(findText('> Bob'))
+        assert(findText('Summon selected').attributes.macrotext=='/targetexact Bob\\n/cast Spell698')
+        combat=true
+        findText('Alice').scripts.PostClick(findText('Alice'))
+        assert(findText('Summon selected').attributes.macrotext=='/targetexact Bob\\n/cast Spell698')
+        ''')
+
+    def test_success_removes_recipient_not_current_selection(self):
+        self.lua.execute('''
+        event('PLAYER_LOGIN')
+        event('CHAT_MSG_PARTY','123','Alice-Realm')
+        event('CHAT_MSG_PARTY','123','Bob')
+        local bob=findText('Bob'); bob.scripts.PostClick(bob)
+        -- The ritual starting, failing, and another caster's success must not remove Alice.
+        local function log(kind,source,spell,dest)
+            event('COMBAT_LOG_EVENT_UNFILTERED',0,kind,false,source,'Caster',0,0,
+                'Player-Recipient',dest,0,0,spell)
+        end
+        log('SPELL_CAST_SUCCESS','Player-Warlock',698,'Alice')
+        log('SPELL_CAST_FAILED','Player-Warlock',7720,'Alice')
+        log('SPELL_SUMMON','Player-Other',7720,'Alice')
+        assert(findText('Alice-Realm'):IsShown())
+        log('SPELL_SUMMON','Player-Warlock',7720,'Alice')
+        assert(findText('Summon selected').attributes.macrotext=='/targetexact Bob\\n/cast Spell698')
+        local b=findText('> Bob'); assert(b:IsShown())
+        log('SPELL_CAST_SUCCESS','Player-Warlock',7720,'Bob')
+        assert(findText('Summon selected').attributes.macrotext=='')
+        -- Removed requesters can request again.
+        event('CHAT_MSG_PARTY','123','Bob')
+        assert(findText('> Bob'):IsShown())
+        ''')
+
+    def test_modern_combat_log_and_deferred_completion(self):
+        self.lua.execute('''
+        event('PLAYER_LOGIN')
+        event('CHAT_MSG_PARTY','123','Alice')
+        function CombatLogGetCurrentEventInfo()
+            return 0,'SPELL_SUMMON',false,'Player-Warlock','Caster',0,0,
+                'Player-Alice','Alice',0,0,7720
+        end
+        combat=true
+        event('COMBAT_LOG_EVENT_UNFILTERED')
+        assert(findText('Summon selected').attributes.macrotext~='')
+        combat=false; event('PLAYER_REGEN_ENABLED')
+        assert(findText('Summon selected').attributes.macrotext=='')
+        ''')
+
+    def test_paging_and_ambiguous_short_names(self):
+        self.lua.execute('''
+        event('PLAYER_LOGIN')
+        for i=1,9 do event('CHAT_MSG_PARTY','123','Player'..i) end
+        for i=1,8 do findText('Next').scripts.OnClick() end
+        local row=findText('> Player9')
+        assert(row and row:IsShown() and row.attributes.macrotext=='/targetexact Player9')
+        SlashCmdList.WARLOCKSERVICESFOREVER('clear')
+        event('CHAT_MSG_PARTY','123','Alice-One')
+        event('CHAT_MSG_PARTY','123','Alice-Two')
+        event('COMBAT_LOG_EVENT_UNFILTERED',0,'SPELL_SUMMON',false,
+            'Player-Warlock','Caster',0,0,'Recipient','Alice',0,0,7720)
+        assert(findText('> Alice-One'):IsShown())
+        assert(findText('Alice-Two'):IsShown())
         ''')
 
     def test_other_classes_do_not_create_panel(self):
